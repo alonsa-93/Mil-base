@@ -1,21 +1,17 @@
-import { getDb } from '../database.js';
+import { supabase } from '../supabase.js';
 
-export function logAction({ userId, username, action, entityType, entityId, oldValue, newValue, ip }) {
+export async function logAction({ userId, username, action, entityType, entityId, oldValue, newValue, ip }) {
   try {
-    const db = getDb();
-    db.prepare(`
-      INSERT INTO audit_log (user_id, username, action, entity_type, entity_id, old_value, new_value, ip)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-    `).run(
-      userId ?? null,
-      username ?? null,
+    await supabase.from('audit_log').insert({
+      user_id: userId ?? null,
+      username: username ?? null,
       action,
-      entityType,
-      entityId ? String(entityId) : null,
-      oldValue ? JSON.stringify(oldValue) : null,
-      newValue ? JSON.stringify(newValue) : null,
-      ip ?? null
-    );
+      entity_type: entityType,
+      entity_id: entityId ? String(entityId) : null,
+      old_value: oldValue ? JSON.stringify(oldValue) : null,
+      new_value: newValue ? JSON.stringify(newValue) : null,
+      ip: ip ?? null
+    });
   } catch (e) {
     console.error('Audit log error:', e.message);
   }

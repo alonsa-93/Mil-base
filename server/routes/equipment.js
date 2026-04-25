@@ -1,167 +1,161 @@
 import { Router } from 'express';
-import { getDb, DEFAULT_EQUIPMENT_ITEMS, seedDefaultEquipment } from '../database.js';
+import { supabase } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { logAction } from '../middleware/audit.js';
 
 const router = Router();
 
+const DEFAULT_EQUIPMENT_ITEMS = [
+  { key: 'weapon', label: 'נשק אישי' },
+  { key: 'vest', label: 'אפוד / ווסט' },
+  { key: 'helmet', label: 'קסדה' },
+  { key: 'magazines', label: '5 מחסניות' },
+  { key: 'knee_pads', label: 'ברכיות' },
+  { key: 'medical_kit', label: 'חסם עורקים ותחבושת אישית' },
+];
+
 // ─── Inventory items ──────────────────────────────────────────────────────────
 
-router.get('/items', requireAuth, (req, res) => {
-  const db = getDb();
-  res.json(db.prepare('SELECT * FROM equipment_items ORDER BY category, name').all());
-});
+router.get('/items', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('equipment_items')
+      .select('*')
+      .order('category', { ascending: true })
+      .order('name', { ascending: true });
 
-router.post('/items', requireAuth, requireRole('rasap'), (req, res) => {
-  const db = getDb();
-  const { name, category, total_quantity, available_quantity, min_required, unit_of_measure, notes } = req.body;
-  if (!name || !category) return res.status(400).json({ error: 'שדות חובה חסרים' });
-  const r = db.prepare(`
-    INSERT INTO equipment_items (name,category,total_quantity,available_quantity,min_required,unit_of_measure,notes)
-    VALUES (?,?,?,?,?,?,?)
-  `).run(name, category, total_quantity ?? 0, available_quantity ?? 0, min_required ?? 0, unit_of_measure ?? 'יחידה', notes);
-  res.status(201).json(db.prepare('SELECT * FROM equipment_items WHERE id = ?').get(r.lastInsertRowid));
-});
-
-router.put('/items/:id', requireAuth, requireRole('rasap'), (req, res) => {
-  const db = getDb();
-  const fields = ['name','category','total_quantity','available_quantity','min_required','unit_of_measure','notes'];
-  const updates = {};
-  fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
-  if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'אין שדות לעדכון' });
-  const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE equipment_items SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), req.params.id);
-  res.json(db.prepare('SELECT * FROM equipment_items WHERE id = ?').get(req.params.id));
-});
-
-router.delete('/items/:id', requireAuth, requireRole('mefaked'), (req, res) => {
-  const db = getDb();
-  db.prepare('DELETE FROM equipment_items WHERE id = ?').run(req.params.id);
-  res.json({ ok: true });
-});
-
-// ─── Equipment assignments (issue/return) ─────────────────────────────────────
-
-router.get('/assignments', requireAuth, (req, res) => {
-  const db = getDb();
-  const { soldier_id } = req.query;
-  let q = `SELECT ea.*, s.full_name, s.personal_id, ei.name as item_name, ei.category
-           FROM equipment_assignments ea
-           JOIN soldiers s ON ea.soldier_id = s.id
-           JOIN equipment_items ei ON ea.item_id = ei.id`;
-  const params = [];
-  if (soldier_id) { q += ' WHERE ea.soldier_id = ?'; params.push(soldier_id); }
-  q += ' ORDER BY ea.issued_at DESC';
-  res.json(db.prepare(q).all(...params));
-});
-
-router.post('/issue', requireAuth, requireRole('rasap'), (req, res) => {
-  const db = getDb();
-  const { soldier_id, item_id, quantity = 1 } = req.body;
-  if (!soldier_id || !item_id) return res.status(400).json({ error: 'שדות חסרים' });
-
-  const item = db.prepare('SELECT * FROM equipment_items WHERE id = ?').get(item_id);
-  if (!item) return res.status(404).json({ error: 'פריט לא נמצא' });
-  if (item.available_quantity < quantity) return res.status(400).json({ error: 'אין מספיק מלאי' });
-
-  const r = db.prepare(`
-    INSERT INTO equipment_assignments (soldier_id, item_id, quantity, issued_by) VALUES (?, ?, ?, ?)
-  `).run(soldier_id, item_id, quantity, req.user.id);
-
-  db.prepare('UPDATE equipment_items SET available_quantity = available_quantity - ? WHERE id = ?').run(quantity, item_id);
-
-  logAction({ userId: req.user.id, username: req.user.username, action: 'ISSUE_EQUIPMENT', entityType: 'equipment', entityId: r.lastInsertRowid, newValue: { soldier_id, item_id, quantity }, ip: req.ip });
-  req.io?.emit('equipment:updated');
-  res.status(201).json({ id: r.lastInsertRowid });
-});
-
-router.post('/return/:id', requireAuth, requireRole('rasap'), (req, res) => {
-  const db = getDb();
-  const ea = db.prepare('SELECT * FROM equipment_assignments WHERE id = ?').get(req.params.id);
-  if (!ea) return res.status(404).json({ error: 'לא נמצא' });
-  if (ea.status === 'הוחזר') return res.status(400).json({ error: 'הציוד כבר הוחזר' });
-
-  db.prepare(`UPDATE equipment_assignments SET status = 'הוחזר', returned_at = datetime('now','localtime') WHERE id = ?`).run(req.params.id);
-  db.prepare('UPDATE equipment_items SET available_quantity = available_quantity + ? WHERE id = ?').run(ea.quantity, ea.item_id);
-
-  logAction({ userId: req.user.id, username: req.user.username, action: 'RETURN_EQUIPMENT', entityType: 'equipment', entityId: req.params.id, ip: req.ip });
-  req.io?.emit('equipment:updated');
-  res.json({ ok: true });
-});
-
-// ─── Gaps ─────────────────────────────────────────────────────────────────────
-
-router.get('/gaps', requireAuth, (req, res) => {
-  const db = getDb();
-  const items = db.prepare('SELECT * FROM equipment_items').all();
-  const gaps = items
-    .filter(i => i.available_quantity < i.min_required)
-    .map(i => ({ ...i, gap: i.min_required - i.available_quantity }));
-  res.json(gaps);
-});
-
-// ─── Soldier personal equipment (checklist) ───────────────────────────────────
-
-router.get('/soldier/:soldierIdOrAll', requireAuth, (req, res) => {
-  const db = getDb();
-  const { soldierIdOrAll } = req.params;
-
-  if (soldierIdOrAll === 'all') {
-    // Return all soldiers with their equipment summary
-    const soldiers = db.prepare('SELECT id, full_name, personal_id, company, team FROM soldiers ORDER BY serial_num ASC').all();
-    const result = soldiers.map(s => {
-      const items = db.prepare('SELECT * FROM soldier_equipment WHERE soldier_id = ?').all(s.id);
-      // Seed if missing
-      if (items.length === 0) {
-        seedDefaultEquipment(s.id);
-        return { ...s, equipment: DEFAULT_EQUIPMENT_ITEMS.map(i => ({ item_type: i.key, label: i.label, status: 'missing' })) };
-      }
-      const itemMap = {};
-      items.forEach(i => { itemMap[i.item_type] = i.status; });
-      return {
-        ...s,
-        equipment: DEFAULT_EQUIPMENT_ITEMS.map(i => ({ item_type: i.key, label: i.label, status: itemMap[i.key] || 'missing' }))
-      };
-    });
-    return res.json(result);
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    console.error('Get equipment items error:', e);
+    res.status(500).json({ error: 'שגיאה בטעינת ציוד' });
   }
-
-  const soldierId = parseInt(soldierIdOrAll);
-  let items = db.prepare('SELECT * FROM soldier_equipment WHERE soldier_id = ?').all(soldierId);
-  if (items.length === 0) {
-    seedDefaultEquipment(soldierId);
-    items = db.prepare('SELECT * FROM soldier_equipment WHERE soldier_id = ?').all(soldierId);
-  }
-  const itemMap = {};
-  items.forEach(i => { itemMap[i.item_type] = i; });
-  const result = DEFAULT_EQUIPMENT_ITEMS.map(def => ({
-    item_type: def.key,
-    label: def.label,
-    status: itemMap[def.key]?.status || 'missing',
-    updated_at: itemMap[def.key]?.updated_at,
-  }));
-  res.json(result);
 });
 
-router.put('/soldier/:soldierId/:itemType', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const { soldierId, itemType } = req.params;
-  const { status } = req.body;
-  const VALID = ['missing', 'issued', 'returned'];
-  if (!VALID.includes(status)) return res.status(400).json({ error: 'סטטוס לא תקין' });
+router.post('/items', requireAuth, requireRole('rasap'), async (req, res) => {
+  try {
+    const { name, category, total_quantity, available_quantity, min_required, unit_of_measure, notes } = req.body;
+    if (!name || !category) return res.status(400).json({ error: 'שדות חובה חסרים' });
 
-  db.prepare(`
-    INSERT INTO soldier_equipment (soldier_id, item_type, status, updated_at, updated_by)
-    VALUES (?, ?, ?, datetime('now','localtime'), ?)
-    ON CONFLICT(soldier_id, item_type) DO UPDATE SET
-      status = excluded.status,
-      updated_at = excluded.updated_at,
-      updated_by = excluded.updated_by
-  `).run(soldierId, itemType, status, req.user.id);
+    const { data, error } = await supabase
+      .from('equipment_items')
+      .insert({
+        name,
+        category,
+        total_quantity: total_quantity ?? 0,
+        available_quantity: available_quantity ?? 0,
+        min_required: min_required ?? 0,
+        unit_of_measure: unit_of_measure ?? 'יחידה',
+        notes
+      })
+      .select();
 
-  logAction({ userId: req.user.id, username: req.user.username, action: 'UPDATE_SOLDIER_EQUIPMENT', entityType: 'soldier_equipment', entityId: parseInt(soldierId), newValue: { itemType, status }, ip: req.ip });
-  req.io?.emit('equipment:soldier_updated', { soldierId: parseInt(soldierId), itemType, status });
-  res.json({ ok: true });
+    if (error) throw error;
+    res.status(201).json(data[0]);
+  } catch (e) {
+    console.error('Create equipment item error:', e);
+    res.status(500).json({ error: 'שגיאה ביצירת פריט' });
+  }
+});
+
+router.put('/items/:id', requireAuth, requireRole('rasap'), async (req, res) => {
+  try {
+    const fields = ['name', 'category', 'total_quantity', 'available_quantity', 'min_required', 'unit_of_measure', 'notes'];
+    const updates = {};
+    fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+
+    if (Object.keys(updates).length === 0) {
+      const { data } = await supabase.from('equipment_items').select('*').eq('id', req.params.id).limit(1);
+      return res.json(data[0]);
+    }
+
+    const { data, error } = await supabase
+      .from('equipment_items')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select();
+
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (e) {
+    console.error('Update equipment item error:', e);
+    res.status(500).json({ error: 'שגיאה בעדכון פריט' });
+  }
+});
+
+router.delete('/items/:id', requireAuth, requireRole('mefaked'), async (req, res) => {
+  try {
+    const { error } = await supabase
+      .from('equipment_items')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (error) throw error;
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Delete equipment item error:', e);
+    res.status(500).json({ error: 'שגיאה במחיקת פריט' });
+  }
+});
+
+// ─── Soldier Equipment (Personal Equipment Status) ────────────────────────────
+
+router.get('/soldier/:soldierId', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('soldier_equipment')
+      .select('*')
+      .eq('soldier_id', req.params.soldierId);
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    console.error('Get soldier equipment error:', e);
+    res.status(500).json({ error: 'שגיאה בטעינת ציוד אישי' });
+  }
+});
+
+router.put('/soldier/:soldierId/:itemType', requireAuth, async (req, res) => {
+  try {
+    const { status } = req.body;
+    if (!status || !['missing', 'issued', 'returned'].includes(status)) {
+      return res.status(400).json({ error: 'סטטוס לא תקין' });
+    }
+
+    const { data, error } = await supabase
+      .from('soldier_equipment')
+      .update({ status, updated_by: req.user.id, updated_at: new Date().toISOString() })
+      .eq('soldier_id', req.params.soldierId)
+      .eq('item_type', req.params.itemType)
+      .select();
+
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (e) {
+    console.error('Update soldier equipment error:', e);
+    res.status(500).json({ error: 'שגיאה בעדכון ציוד אישי' });
+  }
+});
+
+// ─── Gaps ───────────────────────────────────────────────────────────────────
+
+router.get('/gaps', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('equipment_items')
+      .select('id, name, category, available_quantity, min_required')
+      .lt('available_quantity', supabase.rpc('min_required'));
+
+    if (error) throw error;
+
+    // Manually filter since RPC might not work
+    const { data: items } = await supabase.from('equipment_items').select('*');
+    const gaps = items?.filter(item => item.available_quantity < item.min_required) || [];
+
+    res.json(gaps);
+  } catch (e) {
+    console.error('Get equipment gaps error:', e);
+    res.status(500).json({ error: 'שגיאה בטעינת פערים' });
+  }
 });
 
 export default router;

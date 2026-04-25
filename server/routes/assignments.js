@@ -1,85 +1,159 @@
 import { Router } from 'express';
-import { getDb } from '../database.js';
+import { supabase } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { logAction } from '../middleware/audit.js';
 
 const router = Router();
 
-router.post('/', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const { mission_id, soldier_id, role_in_mission = 'לוחם', force = false } = req.body;
-  if (!mission_id || !soldier_id) return res.status(400).json({ error: 'שדות חסרים' });
+router.post('/', requireAuth, requireRole('samal'), async (req, res) => {
+  try {
+    const { mission_id, soldier_id, role_in_mission = 'לוחם', force = false } = req.body;
+    if (!mission_id || !soldier_id) return res.status(400).json({ error: 'שדות חסרים' });
 
-  const mission = db.prepare('SELECT * FROM missions WHERE id = ?').get(mission_id);
-  if (!mission) return res.status(404).json({ error: 'משימה לא נמצאה' });
+    // Check mission exists
+    const { data: missions, error: missionError } = await supabase
+      .from('missions')
+      .select('*')
+      .eq('id', mission_id)
+      .limit(1);
 
-  const soldier = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(soldier_id);
-  if (!soldier) return res.status(404).json({ error: 'חייל לא נמצא' });
+    if (missionError || !missions || missions.length === 0) {
+      return res.status(404).json({ error: 'משימה לא נמצאה' });
+    }
 
-  // Check duplicate
-  const dup = db.prepare('SELECT id FROM assignments WHERE mission_id = ? AND soldier_id = ?').get(mission_id, soldier_id);
-  if (dup) return res.status(409).json({ error: 'החייל כבר משובץ למשימה זו' });
+    const mission = missions[0];
 
-  // Conflict check
-  const conflict = db.prepare(`
-    SELECT m.title, m.start_time, m.end_time FROM assignments a
-    JOIN missions m ON a.mission_id = m.id
-    WHERE a.soldier_id = ? AND m.status != 'בוטל' AND m.id != ?
-      AND m.start_time < ? AND m.end_time > ?
-  `).get(soldier_id, mission_id, mission.end_time, mission.start_time);
+    // Check soldier exists
+    const { data: soldiers, error: soldierError } = await supabase
+      .from('soldiers')
+      .select('*')
+      .eq('id', soldier_id)
+      .limit(1);
 
-  if (conflict && !force)
-    return res.status(409).json({ error: `חפיפה עם משימה: ${conflict.title}`, conflict });
+    if (soldierError || !soldiers || soldiers.length === 0) {
+      return res.status(404).json({ error: 'חייל לא נמצא' });
+    }
 
-  // Rest warning
-  const lastMission = db.prepare(`
-    SELECT MAX(m.end_time) as last_end FROM assignments a
-    JOIN missions m ON a.mission_id = m.id
-    WHERE a.soldier_id = ? AND m.status != 'בוטל'
-  `).get(soldier_id);
-  const lastEnd = lastMission?.last_end || soldier.last_mission_end;
-  const hoursSince = lastEnd ? (new Date(mission.start_time) - new Date(lastEnd)) / 3600000 : 9;
-  const restWarning = hoursSince < 8;
+    const soldier = soldiers[0];
 
-  const result = db.prepare(`
-    INSERT INTO assignments (mission_id, soldier_id, role_in_mission, assigned_by, rest_warning)
-    VALUES (?, ?, ?, ?, ?)
-  `).run(mission_id, soldier_id, role_in_mission, req.user.id, restWarning ? 1 : 0);
+    // Check duplicate
+    const { data: dup } = await supabase
+      .from('assignments')
+      .select('id')
+      .eq('mission_id', mission_id)
+      .eq('soldier_id', soldier_id)
+      .limit(1);
 
-  // Update soldier status
-  db.prepare(`UPDATE soldiers SET status = 'במשימה' WHERE id = ? AND status = 'זמין'`).run(soldier_id);
+    if (dup && dup.length > 0) {
+      return res.status(409).json({ error: 'החייל כבר משובץ למשימה זו' });
+    }
 
-  const assignment = db.prepare(`
-    SELECT a.*, s.full_name, s.personal_id FROM assignments a
-    JOIN soldiers s ON a.soldier_id = s.id WHERE a.id = ?
-  `).get(result.lastInsertRowid);
+    // Conflict check
+    const { data: conflicts } = await supabase
+      .from('assignments')
+      .select('missions(title, start_time, end_time)')
+      .eq('soldier_id', soldier_id)
+      .neq('missions.status', 'בוטל')
+      .neq('missions.id', mission_id)
+      .lt('missions.start_time', mission.end_time)
+      .gt('missions.end_time', mission.start_time)
+      .limit(1);
 
-  logAction({ userId: req.user.id, username: req.user.username, action: 'ASSIGN_SOLDIER', entityType: 'assignments', entityId: result.lastInsertRowid, newValue: { mission_id, soldier_id }, ip: req.ip });
-  req.io?.emit('assignment:created', { ...assignment, mission_id, restWarning });
-  res.status(201).json({ ...assignment, restWarning, hoursSinceLastMission: Math.floor(hoursSince) });
+    if (conflicts && conflicts.length > 0 && !force) {
+      return res.status(409).json({
+        error: `חפיפה עם משימה: ${conflicts[0].missions.title}`,
+        conflict: conflicts[0]
+      });
+    }
+
+    // Rest warning
+    const { data: lastMissions } = await supabase
+      .from('assignments')
+      .select('missions(end_time)')
+      .eq('soldier_id', soldier_id)
+      .neq('missions.status', 'בוטל')
+      .order('missions(end_time)', { ascending: false })
+      .limit(1);
+
+    const lastEnd = lastMissions && lastMissions[0]
+      ? lastMissions[0].missions.end_time
+      : soldier.last_mission_end;
+
+    const hoursSince = lastEnd
+      ? (new Date(mission.start_time) - new Date(lastEnd)) / 3600000
+      : 9;
+
+    const restWarning = hoursSince < 8;
+
+    // Create assignment
+    const { data: assignment, error: insertError } = await supabase
+      .from('assignments')
+      .insert({
+        mission_id,
+        soldier_id,
+        role_in_mission,
+        assigned_by: req.user.id,
+        rest_warning: restWarning ? 1 : 0
+      })
+      .select();
+
+    if (insertError) throw insertError;
+
+    // Update soldier status
+    await supabase
+      .from('soldiers')
+      .update({ status: 'במשימה' })
+      .eq('id', soldier_id)
+      .eq('status', 'זמין');
+
+    res.status(201).json(assignment[0]);
+  } catch (e) {
+    console.error('Create assignment error:', e);
+    res.status(500).json({ error: 'שגיאה בשיבוץ' });
+  }
 });
 
-router.delete('/:id', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const a = db.prepare('SELECT * FROM assignments WHERE id = ?').get(req.params.id);
-  if (!a) return res.status(404).json({ error: 'לא נמצא' });
+router.delete('/:id', requireAuth, requireRole('samal'), async (req, res) => {
+  try {
+    // Get assignment to find soldier
+    const { data: assignments, error: getError } = await supabase
+      .from('assignments')
+      .select('soldier_id')
+      .eq('id', req.params.id)
+      .limit(1);
 
-  db.prepare('DELETE FROM assignments WHERE id = ?').run(req.params.id);
+    if (getError || !assignments || assignments.length === 0) {
+      return res.status(404).json({ error: 'שיבוץ לא נמצא' });
+    }
 
-  // Check if soldier has other active missions
-  const otherMissions = db.prepare(`
-    SELECT COUNT(*) as cnt FROM assignments a
-    JOIN missions m ON a.mission_id = m.id
-    WHERE a.soldier_id = ? AND m.status IN ('מתוכנן','פעיל')
-  `).get(a.soldier_id);
+    const soldierId = assignments[0].soldier_id;
 
-  if (otherMissions.cnt === 0) {
-    db.prepare(`UPDATE soldiers SET status = 'זמין' WHERE id = ? AND status = 'במשימה'`).run(a.soldier_id);
+    // Delete assignment
+    const { error: deleteError } = await supabase
+      .from('assignments')
+      .delete()
+      .eq('id', req.params.id);
+
+    if (deleteError) throw deleteError;
+
+    // Reset soldier status to זמין if no other active assignments
+    const { data: otherAssignments } = await supabase
+      .from('assignments')
+      .select('id')
+      .eq('soldier_id', soldierId)
+      .limit(1);
+
+    if (!otherAssignments || otherAssignments.length === 0) {
+      await supabase
+        .from('soldiers')
+        .update({ status: 'זמין' })
+        .eq('id', soldierId);
+    }
+
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('Delete assignment error:', e);
+    res.status(500).json({ error: 'שגיאה במחיקת שיבוץ' });
   }
-
-  logAction({ userId: req.user.id, username: req.user.username, action: 'UNASSIGN_SOLDIER', entityType: 'assignments', entityId: req.params.id, oldValue: a, ip: req.ip });
-  req.io?.emit('assignment:deleted', { id: parseInt(req.params.id), soldier_id: a.soldier_id, mission_id: a.mission_id });
-  res.json({ ok: true });
 });
 
 export default router;

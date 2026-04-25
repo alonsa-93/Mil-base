@@ -1,136 +1,197 @@
 import { Router } from 'express';
-import { getDb, seedDefaultEquipment } from '../database.js';
+import { supabase } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
-import { logAction } from '../middleware/audit.js';
 
 const router = Router();
 
-router.get('/', requireAuth, (req, res) => {
-  const db = getDb();
-  const soldiers = db.prepare('SELECT * FROM soldiers ORDER BY serial_num ASC, full_name ASC').all();
-  res.json(soldiers);
+const DEFAULT_EQUIPMENT_ITEMS = [
+  { key:'weapon', label:'נשק אישי' },
+  { key:'vest', label:'אפוד / ווסט' },
+  { key:'helmet', label:'קסדה' },
+  { key:'magazines', label:'5 מחסניות' },
+  { key:'knee_pads', label:'ברכיות' },
+  { key:'medical_kit', label:'חסם עורקים ותחבושת אישית' },
+];
+
+async function seedDefaultEquipment(soldierId) {
+  for (const item of DEFAULT_EQUIPMENT_ITEMS) {
+    await supabase.from('soldier_equipment').insert({
+      soldier_id: soldierId,
+      item_type: item.key,
+      status: 'missing'
+    }).select();
+  }
+}
+
+router.get('/', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('soldiers')
+      .select('*')
+      .order('serial_num', { ascending: true })
+      .order('full_name', { ascending: true });
+
+    if (error) throw error;
+    res.json(data || []);
+  } catch (e) {
+    console.error('Get soldiers error:', e);
+    res.status(500).json({ error: 'שגיאה בטעינת חיילים' });
+  }
 });
 
-router.get('/:id', requireAuth, (req, res) => {
-  const db = getDb();
-  const soldier = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(req.params.id);
-  if (!soldier) return res.status(404).json({ error: 'לא נמצא' });
-  res.json(soldier);
+router.get('/:id', requireAuth, async (req, res) => {
+  try {
+    const { data, error } = await supabase
+      .from('soldiers')
+      .select('*')
+      .eq('id', req.params.id)
+      .limit(1);
+
+    if (error || !data || data.length === 0) {
+      return res.status(404).json({ error: 'לא נמצא' });
+    }
+    res.json(data[0]);
+  } catch (e) {
+    console.error('Get soldier error:', e);
+    res.status(500).json({ error: 'שגיאה בטעינת חייל' });
+  }
 });
 
-router.post('/', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const {
-    personal_id, full_name, role = 'lohem', status = 'זמין', phone,
-    company, team, gender = 'זכר',
-    mil_shirt, mil_pants, mil_boots,
-    is_vegan = 0, is_vegetarian = 0, lactose_intolerant = 0, gluten_free = 0, nutrition_notes
-  } = req.body;
+router.post('/', requireAuth, requireRole('samal'), async (req, res) => {
+  try {
+    const {
+      personal_id, full_name, role = 'lohem', status = 'זמין', phone,
+      company, team, gender = 'זכר',
+      mil_shirt, mil_pants, mil_boots,
+      is_vegan = 0, is_vegetarian = 0, lactose_intolerant = 0, gluten_free = 0, nutrition_notes
+    } = req.body;
 
-  if (!personal_id || !full_name || !phone || !company || !team || !role || !status)
-    return res.status(400).json({ error: 'שדות חובה חסרים' });
+    if (!personal_id || !full_name || !phone || !company || !team || !role || !status) {
+      return res.status(400).json({ error: 'שדות חובה חסרים' });
+    }
 
-  // Auto serial_num
-  const maxSerial = db.prepare('SELECT MAX(serial_num) as m FROM soldiers').get();
-  const serial_num = (maxSerial?.m || 0) + 1;
+    // Get max serial number
+    const { data: maxData, error: maxError } = await supabase
+      .from('soldiers')
+      .select('serial_num')
+      .order('serial_num', { ascending: false })
+      .limit(1);
 
-  const result = db.prepare(`
-    INSERT INTO soldiers (serial_num,personal_id,full_name,role,status,phone,company,team,gender,
-      mil_shirt,mil_pants,mil_boots,
-      is_vegan,is_vegetarian,lactose_intolerant,gluten_free,nutrition_notes)
-    VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
-  `).run(serial_num, personal_id, full_name, role, status, phone, company, team, gender,
-    mil_shirt, mil_pants, mil_boots,
-    is_vegan, is_vegetarian, lactose_intolerant, gluten_free, nutrition_notes);
+    const serial_num = (maxData && maxData[0]?.serial_num) ? maxData[0].serial_num + 1 : 1;
 
-  seedDefaultEquipment(result.lastInsertRowid);
+    const { data, error } = await supabase
+      .from('soldiers')
+      .insert({
+        serial_num,
+        personal_id,
+        full_name,
+        role,
+        status,
+        phone,
+        company,
+        team,
+        gender,
+        mil_shirt,
+        mil_pants,
+        mil_boots,
+        is_vegan,
+        is_vegetarian,
+        lactose_intolerant,
+        gluten_free,
+        nutrition_notes
+      })
+      .select();
 
-  const soldier = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(result.lastInsertRowid);
-  logAction({ userId: req.user.id, username: req.user.username, action: 'CREATE_SOLDIER', entityType: 'soldiers', entityId: soldier.id, newValue: soldier, ip: req.ip });
+    if (error) throw error;
 
-  req.io?.emit('soldier:created', soldier);
-  res.status(201).json(soldier);
+    const soldier = data[0];
+    await seedDefaultEquipment(soldier.id);
+
+    res.status(201).json(soldier);
+  } catch (e) {
+    console.error('Create soldier error:', e);
+    res.status(500).json({ error: 'שגיאה ביצירת חייל' });
+  }
 });
 
-router.put('/:id', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const old = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(req.params.id);
-  if (!old) return res.status(404).json({ error: 'לא נמצא' });
+router.put('/:id', requireAuth, requireRole('samal'), async (req, res) => {
+  try {
+    const { data: oldData, error: oldError } = await supabase
+      .from('soldiers')
+      .select('*')
+      .eq('id', req.params.id)
+      .limit(1);
 
-  const fields = [
-    'personal_id','full_name','role','status','phone','company','team','gender',
-    'mil_shirt','mil_pants','mil_boots',
-    'is_vegan','is_vegetarian','lactose_intolerant','gluten_free','nutrition_notes',
-    'last_mission_end','total_guard_hours','total_mission_hours'
-  ];
-  const updates = {};
-  fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+    if (oldError || !oldData || oldData.length === 0) {
+      return res.status(404).json({ error: 'לא נמצא' });
+    }
 
-  if (Object.keys(updates).length === 0) return res.json(old);
+    const fields = [
+      'personal_id','full_name','role','status','phone','company','team','gender',
+      'mil_shirt','mil_pants','mil_boots',
+      'is_vegan','is_vegetarian','lactose_intolerant','gluten_free','nutrition_notes',
+      'last_mission_end','total_guard_hours','total_mission_hours'
+    ];
 
-  const setClauses = Object.keys(updates).map(k => `${k} = ?`).join(', ');
-  db.prepare(`UPDATE soldiers SET ${setClauses} WHERE id = ?`).run(...Object.values(updates), req.params.id);
+    const updates = {};
+    fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
 
-  const updated = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(req.params.id);
-  logAction({ userId: req.user.id, username: req.user.username, action: 'UPDATE_SOLDIER', entityType: 'soldiers', entityId: req.params.id, oldValue: old, newValue: updated, ip: req.ip });
+    if (Object.keys(updates).length === 0) {
+      return res.json(oldData[0]);
+    }
 
-  req.io?.emit('soldier:updated', updated);
-  res.json(updated);
+    const { data, error } = await supabase
+      .from('soldiers')
+      .update(updates)
+      .eq('id', req.params.id)
+      .select();
+
+    if (error) throw error;
+    res.json(data[0]);
+  } catch (e) {
+    console.error('Update soldier error:', e);
+    res.status(500).json({ error: 'שגיאה בעדכון חייל' });
+  }
 });
 
-// Bulk status update
-router.put('/bulk/status', requireAuth, requireRole('samal'), (req, res) => {
-  const db = getDb();
-  const { ids, status } = req.body;
-  if (!Array.isArray(ids) || !ids.length || !status) return res.status(400).json({ error: 'שדות חסרים' });
+router.put('/bulk/status', requireAuth, requireRole('samal'), async (req, res) => {
+  try {
+    const { ids, status } = req.body;
+    if (!Array.isArray(ids) || !ids.length || !status) {
+      return res.status(400).json({ error: 'שדות חסרים' });
+    }
 
-  const stmt = db.prepare('UPDATE soldiers SET status = ? WHERE id = ?');
-  const update = db.transaction(() => ids.forEach(id => stmt.run(status, id)));
-  update();
+    const { error } = await supabase
+      .from('soldiers')
+      .update({ status })
+      .in('id', ids);
 
-  logAction({ userId: req.user.id, username: req.user.username, action: 'BULK_STATUS_UPDATE', entityType: 'soldiers', newValue: { ids, status }, ip: req.ip });
-  req.io?.emit('soldier:bulk_updated', { ids, status });
-  res.json({ ok: true, count: ids.length });
+    if (error) throw error;
+    res.json({ ok: true, count: ids.length });
+  } catch (e) {
+    console.error('Bulk status update error:', e);
+    res.status(500).json({ error: 'שגיאה בעדכון סטטוס' });
+  }
 });
 
-// Bulk delete
-router.delete('/bulk', requireAuth, requireRole('mefaked'), (req, res) => {
-  const db = getDb();
-  const { ids } = req.body;
-  if (!Array.isArray(ids) || !ids.length) return res.status(400).json({ error: 'שדות חסרים' });
+router.delete('/bulk', requireAuth, requireRole('mefaked'), async (req, res) => {
+  try {
+    const { ids } = req.body;
+    if (!Array.isArray(ids) || !ids.length) {
+      return res.status(400).json({ error: 'שדות חסרים' });
+    }
 
-  const stmt = db.prepare('DELETE FROM soldiers WHERE id = ?');
-  const del = db.transaction(() => ids.forEach(id => stmt.run(id)));
-  del();
+    const { error } = await supabase
+      .from('soldiers')
+      .delete()
+      .in('id', ids);
 
-  logAction({ userId: req.user.id, username: req.user.username, action: 'BULK_DELETE_SOLDIERS', entityType: 'soldiers', newValue: { ids }, ip: req.ip });
-  req.io?.emit('soldier:bulk_deleted', { ids });
-  res.json({ ok: true });
-});
-
-router.delete('/:id', requireAuth, requireRole('mefaked'), (req, res) => {
-  const db = getDb();
-  const old = db.prepare('SELECT * FROM soldiers WHERE id = ?').get(req.params.id);
-  if (!old) return res.status(404).json({ error: 'לא נמצא' });
-
-  db.prepare('DELETE FROM soldiers WHERE id = ?').run(req.params.id);
-  logAction({ userId: req.user.id, username: req.user.username, action: 'DELETE_SOLDIER', entityType: 'soldiers', entityId: req.params.id, oldValue: old, ip: req.ip });
-
-  req.io?.emit('soldier:deleted', { id: parseInt(req.params.id) });
-  res.json({ ok: true });
-});
-
-router.get('/:id/missions', requireAuth, (req, res) => {
-  const db = getDb();
-  const assignments = db.prepare(`
-    SELECT a.*, m.title, m.start_time, m.end_time, m.type, m.status
-    FROM assignments a
-    JOIN missions m ON a.mission_id = m.id
-    WHERE a.soldier_id = ?
-    ORDER BY m.start_time DESC
-    LIMIT 50
-  `).all(req.params.id);
-  res.json(assignments);
+    if (error) throw error;
+    res.json({ ok: true, count: ids.length });
+  } catch (e) {
+    console.error('Bulk delete error:', e);
+    res.status(500).json({ error: 'שגיאה במחיקה' });
+  }
 });
 
 export default router;
