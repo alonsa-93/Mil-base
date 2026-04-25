@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.DS_Store
+*.log
+.env
+.env.local
+milbase.db
+milbase.db-shm
+milbase.db-wal
+.claude/
