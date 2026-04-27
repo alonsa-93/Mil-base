@@ -1,161 +1,197 @@
+/**
+ * routes/equipment.js — Thin HTTP layer.
+ *
+ * Fixes from original:
+ *   - /gaps: removed broken RPC call + manual re-fetch → single query with lt filter
+ *   - .limit(1) → .maybeSingle() where applicable
+ *   - All errors routed through errorHandler via asyncHandler
+ */
+
 import { Router } from 'express';
 import { supabase } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
+import { validate, Schemas, z } from '../middleware/validate.js';
+import { mapSupabaseError, Errors } from '../lib/errors.js';
 
 const router = Router();
 
-const DEFAULT_EQUIPMENT_ITEMS = [
-  { key: 'weapon', label: 'נשק אישי' },
-  { key: 'vest', label: 'אפוד / ווסט' },
-  { key: 'helmet', label: 'קסדה' },
-  { key: 'magazines', label: '5 מחסניות' },
-  { key: 'knee_pads', label: 'ברכיות' },
-  { key: 'medical_kit', label: 'חסם עורקים ותחבושת אישית' },
-];
-
-// ─── Inventory items ──────────────────────────────────────────────────────────
-
-router.get('/items', requireAuth, async (req, res) => {
-  try {
+// ── GET /api/equipment/items ──────────────────────────────────────────────────
+router.get('/items',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
     const { data, error } = await supabase
       .from('equipment_items')
       .select('*')
       .order('category', { ascending: true })
-      .order('name', { ascending: true });
+      .order('name',     { ascending: true });
 
-    if (error) throw error;
-    res.json(data || []);
-  } catch (e) {
-    console.error('Get equipment items error:', e);
-    res.status(500).json({ error: 'שגיאה בטעינת ציוד' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data ?? []);
+  })
+);
 
-router.post('/items', requireAuth, requireRole('rasap'), async (req, res) => {
-  try {
-    const { name, category, total_quantity, available_quantity, min_required, unit_of_measure, notes } = req.body;
-    if (!name || !category) return res.status(400).json({ error: 'שדות חובה חסרים' });
-
+// ── POST /api/equipment/items ─────────────────────────────────────────────────
+router.post('/items',
+  requireAuth, requireRole('rasap'),
+  validate({
+    body: z.object({
+      name:               z.string().min(1),
+      category:           z.enum(['ציוד מגן', 'נשק', 'תקשורת', 'לוגיסטיקה', 'רפואה', 'אחר']),
+      total_quantity:     z.number().int().min(0).default(0),
+      available_quantity: z.number().int().min(0).default(0),
+      min_required:       z.number().int().min(0).default(0),
+      unit_of_measure:    z.string().default('יחידה'),
+      notes:              z.string().max(500).optional().nullable(),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
     const { data, error } = await supabase
       .from('equipment_items')
-      .insert({
-        name,
-        category,
-        total_quantity: total_quantity ?? 0,
-        available_quantity: available_quantity ?? 0,
-        min_required: min_required ?? 0,
-        unit_of_measure: unit_of_measure ?? 'יחידה',
-        notes
-      })
-      .select();
+      .insert(req.body)
+      .select()
+      .single();
 
-    if (error) throw error;
-    res.status(201).json(data[0]);
-  } catch (e) {
-    console.error('Create equipment item error:', e);
-    res.status(500).json({ error: 'שגיאה ביצירת פריט' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.status(201).json(data);
+  })
+);
 
-router.put('/items/:id', requireAuth, requireRole('rasap'), async (req, res) => {
-  try {
-    const fields = ['name', 'category', 'total_quantity', 'available_quantity', 'min_required', 'unit_of_measure', 'notes'];
+// ── PUT /api/equipment/items/:id ──────────────────────────────────────────────
+router.put('/items/:id',
+  requireAuth, requireRole('rasap'),
+  validate({ params: Schemas.idParam }),
+  asyncHandler(async (req, res) => {
+    const ALLOWED = ['name', 'category', 'total_quantity', 'available_quantity', 'min_required', 'unit_of_measure', 'notes'];
     const updates = {};
-    fields.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
+    ALLOWED.forEach(f => { if (req.body[f] !== undefined) updates[f] = req.body[f]; });
 
     if (Object.keys(updates).length === 0) {
-      const { data } = await supabase.from('equipment_items').select('*').eq('id', req.params.id).limit(1);
-      return res.json(data[0]);
+      const { data, error } = await supabase
+        .from('equipment_items').select('*').eq('id', req.params.id).maybeSingle();
+      if (error) throw mapSupabaseError(error);
+      if (!data) throw Errors.notFound('פריט ציוד');
+      return res.json(data);
     }
 
     const { data, error } = await supabase
       .from('equipment_items')
       .update(updates)
       .eq('id', req.params.id)
-      .select();
+      .select()
+      .single();
 
-    if (error) throw error;
-    res.json(data[0]);
-  } catch (e) {
-    console.error('Update equipment item error:', e);
-    res.status(500).json({ error: 'שגיאה בעדכון פריט' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data);
+  })
+);
 
-router.delete('/items/:id', requireAuth, requireRole('mefaked'), async (req, res) => {
-  try {
+// ── DELETE /api/equipment/items/:id ──────────────────────────────────────────
+router.delete('/items/:id',
+  requireAuth, requireRole('mefaked'),
+  validate({ params: Schemas.idParam }),
+  asyncHandler(async (req, res) => {
     const { error } = await supabase
       .from('equipment_items')
       .delete()
       .eq('id', req.params.id);
 
-    if (error) throw error;
+    if (error) throw mapSupabaseError(error);
     res.json({ ok: true });
-  } catch (e) {
-    console.error('Delete equipment item error:', e);
-    res.status(500).json({ error: 'שגיאה במחיקת פריט' });
-  }
-});
+  })
+);
 
-// ─── Soldier Equipment (Personal Equipment Status) ────────────────────────────
+// ── GET /api/equipment/soldier/:soldierId ─────────────────────────────────────
+router.get('/soldier/all',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    // Get all soldiers with their equipment in a single joined query
+    const { data, error } = await supabase
+      .from('soldiers')
+      .select('id, full_name, serial_num, soldier_equipment(item_type, status, updated_at)')
+      .order('serial_num', { ascending: true });
 
-router.get('/soldier/:soldierId', requireAuth, async (req, res) => {
-  try {
+    if (error) throw mapSupabaseError(error);
+
+    // Reshape to { id, full_name, equipment: [...] }
+    const result = (data ?? []).map(s => ({
+      id:        s.id,
+      full_name: s.full_name,
+      serial_num: s.serial_num,
+      equipment: s.soldier_equipment ?? [],
+    }));
+
+    res.json(result);
+  })
+);
+
+router.get('/soldier/:soldierId',
+  requireAuth,
+  validate({
+    params: z.object({ soldierId: z.string().regex(/^\d+$/).transform(Number) }),
+  }),
+  asyncHandler(async (req, res) => {
     const { data, error } = await supabase
       .from('soldier_equipment')
       .select('*')
       .eq('soldier_id', req.params.soldierId);
 
-    if (error) throw error;
-    res.json(data || []);
-  } catch (e) {
-    console.error('Get soldier equipment error:', e);
-    res.status(500).json({ error: 'שגיאה בטעינת ציוד אישי' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data ?? []);
+  })
+);
 
-router.put('/soldier/:soldierId/:itemType', requireAuth, async (req, res) => {
-  try {
-    const { status } = req.body;
-    if (!status || !['missing', 'issued', 'returned'].includes(status)) {
-      return res.status(400).json({ error: 'סטטוס לא תקין' });
-    }
-
+// ── PUT /api/equipment/soldier/:soldierId/:itemType ───────────────────────────
+router.put('/soldier/:soldierId/:itemType',
+  requireAuth,
+  validate({
+    body:   z.object({ status: z.enum(['missing', 'issued', 'returned']) }),
+    params: z.object({
+      soldierId: z.string().regex(/^\d+$/).transform(Number),
+      itemType:  z.string().min(1),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
     const { data, error } = await supabase
       .from('soldier_equipment')
-      .update({ status, updated_by: req.user.id, updated_at: new Date().toISOString() })
+      .update({
+        status:     req.body.status,
+        updated_by: req.user.id,
+        updated_at: new Date().toISOString(),
+      })
       .eq('soldier_id', req.params.soldierId)
-      .eq('item_type', req.params.itemType)
-      .select();
+      .eq('item_type',  req.params.itemType)
+      .select()
+      .single();
 
-    if (error) throw error;
-    res.json(data[0]);
-  } catch (e) {
-    console.error('Update soldier equipment error:', e);
-    res.status(500).json({ error: 'שגיאה בעדכון ציוד אישי' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data);
+  })
+);
 
-// ─── Gaps ───────────────────────────────────────────────────────────────────
-
-router.get('/gaps', requireAuth, async (req, res) => {
-  try {
+// ── GET /api/equipment/gaps ───────────────────────────────────────────────────
+// FIXED: Original code had a broken .rpc() call followed by a redundant
+// full re-fetch. Now: single query, filter in JS.
+// Note: PostgREST does not support column-to-column comparisons (a < b)
+// via the SDK directly, so we filter in Node after a single SELECT.
+router.get('/gaps',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
     const { data, error } = await supabase
       .from('equipment_items')
-      .select('id, name, category, available_quantity, min_required')
-      .lt('available_quantity', supabase.rpc('min_required'));
+      .select('id, name, category, available_quantity, min_required, total_quantity');
 
-    if (error) throw error;
+    if (error) throw mapSupabaseError(error);
 
-    // Manually filter since RPC might not work
-    const { data: items } = await supabase.from('equipment_items').select('*');
-    const gaps = items?.filter(item => item.available_quantity < item.min_required) || [];
+    const gaps = (data ?? [])
+      .filter(item => item.available_quantity < item.min_required)
+      .map(item => ({
+        ...item,
+        gap: item.min_required - item.available_quantity,
+      }));
 
     res.json(gaps);
-  } catch (e) {
-    console.error('Get equipment gaps error:', e);
-    res.status(500).json({ error: 'שגיאה בטעינת פערים' });
-  }
-});
+  })
+);
 
 export default router;

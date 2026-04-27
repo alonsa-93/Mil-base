@@ -1,99 +1,104 @@
+/**
+ * routes/users.js — User management.
+ * Thin route layer; no business logic.
+ */
+
 import { Router } from 'express';
 import bcrypt from 'bcryptjs';
 import { supabase } from '../supabase.js';
 import { requireAuth, requireRole } from '../middleware/auth.js';
+import { asyncHandler } from '../middleware/errorHandler.js';
+import { validate, Schemas, z } from '../middleware/validate.js';
+import { mapSupabaseError, Errors } from '../lib/errors.js';
 import { logAction } from '../middleware/audit.js';
 
 const router = Router();
 
-router.get('/', requireAuth, requireRole('mefaked'), async (req, res) => {
-  try {
+const SELECT_SAFE = 'id, username, full_name, role, phone, created_at';
+
+// ── GET /api/users ────────────────────────────────────────────────────────────
+router.get('/',
+  requireAuth, requireRole('mefaked'),
+  asyncHandler(async (_req, res) => {
     const { data, error } = await supabase
       .from('users')
-      .select('id, username, full_name, role, phone, created_at')
-      .order('role', { ascending: false })
+      .select(SELECT_SAFE)
+      .order('role',      { ascending: false })
       .order('full_name', { ascending: true });
 
-    if (error) throw error;
-    res.json(data || []);
-  } catch (e) {
-    console.error('Get users error:', e);
-    res.status(500).json({ error: 'שגיאה בטעינת משתמשים' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data ?? []);
+  })
+);
 
-router.post('/', requireAuth, requireRole('mefaked'), async (req, res) => {
-  try {
+// ── POST /api/users ───────────────────────────────────────────────────────────
+router.post('/',
+  requireAuth, requireRole('mefaked'),
+  validate({ body: Schemas.createUser }),
+  asyncHandler(async (req, res) => {
     const { username, password, full_name, role, phone } = req.body;
-    if (!username || !password || !full_name || !role) return res.status(400).json({ error: 'שדות חובה חסרים' });
-
-    const hash = bcrypt.hashSync(password, 10);
+    const hash = await bcrypt.hash(password, 10);
 
     const { data, error } = await supabase
       .from('users')
-      .insert({
-        username,
-        password: hash,
-        full_name,
-        role,
-        phone
-      })
-      .select('id, username, full_name, role, phone, created_at');
+      .insert({ username, password: hash, full_name, role, phone })
+      .select(SELECT_SAFE)
+      .single();
 
-    if (error) {
-      if (error.message.includes('unique') || error.code === '23505') {
-        return res.status(409).json({ error: 'שם משתמש כבר קיים' });
-      }
-      throw error;
-    }
+    if (error) throw mapSupabaseError(error);
 
-    const user = data[0];
-    await logAction({
-      userId: req.user.id,
-      username: req.user.username,
-      action: 'CREATE_USER',
-      entityType: 'users',
-      entityId: user.id,
-      newValue: { username, role },
-      ip: req.ip
+    // Audit (non-blocking)
+    logAction({
+      userId: req.user.id, username: req.user.username,
+      action: 'CREATE_USER', entityType: 'users',
+      entityId: data.id, newValue: { username, role }, ip: req.ip,
     });
 
-    res.status(201).json(user);
-  } catch (e) {
-    console.error('Create user error:', e);
-    res.status(500).json({ error: 'שגיאה ביצירת משתמש' });
-  }
-});
+    res.status(201).json(data);
+  })
+);
 
-router.put('/:id', requireAuth, requireRole('mefaked'), async (req, res) => {
-  try {
+// ── PUT /api/users/:id ────────────────────────────────────────────────────────
+router.put('/:id',
+  requireAuth, requireRole('mefaked'),
+  validate({
+    params: z.object({ id: z.string().regex(/^\d+$/).transform(Number) }),
+    body: z.object({
+      full_name: z.string().min(2).max(100).optional(),
+      role:      z.enum(['lohem', 'samal', 'rasap', 'mefaked', 'magad']).optional(),
+      phone:     z.string().max(15).optional().nullable(),
+      password:  z.string().min(6).optional(),
+    }).refine(d => Object.keys(d).length > 0, { message: 'אין שדות לעדכון' }),
+  }),
+  asyncHandler(async (req, res) => {
     const { full_name, role, phone, password } = req.body;
     const updates = {};
     if (full_name !== undefined) updates.full_name = full_name;
-    if (role !== undefined) updates.role = role;
-    if (phone !== undefined) updates.phone = phone;
-    if (password) updates.password = bcrypt.hashSync(password, 10);
-
-    if (Object.keys(updates).length === 0) return res.status(400).json({ error: 'אין שדות לעדכון' });
+    if (role      !== undefined) updates.role      = role;
+    if (phone     !== undefined) updates.phone     = phone;
+    if (password)                updates.password  = await bcrypt.hash(password, 10);
 
     const { data, error } = await supabase
       .from('users')
       .update(updates)
       .eq('id', req.params.id)
-      .select('id, username, full_name, role, phone, created_at');
+      .select(SELECT_SAFE)
+      .single();
 
-    if (error) throw error;
-    res.json(data[0]);
-  } catch (e) {
-    console.error('Update user error:', e);
-    res.status(500).json({ error: 'שגיאה בעדכון משתמש' });
-  }
-});
+    if (error) throw mapSupabaseError(error);
+    res.json(data);
+  })
+);
 
-router.delete('/:id', requireAuth, requireRole('magad'), async (req, res) => {
-  try {
-    if (parseInt(req.params.id) === req.user.id) {
-      return res.status(400).json({ error: 'לא ניתן למחוק את עצמך' });
+// ── DELETE /api/users/:id ─────────────────────────────────────────────────────
+router.delete('/:id',
+  requireAuth, requireRole('magad'),
+  validate({
+    params: z.object({ id: z.string().regex(/^\d+$/).transform(Number) }),
+  }),
+  asyncHandler(async (req, res) => {
+    if (req.params.id === req.user.id) {
+      throw Errors.badRequest('לא ניתן למחוק את עצמך');
     }
 
     const { error } = await supabase
@@ -101,12 +106,9 @@ router.delete('/:id', requireAuth, requireRole('magad'), async (req, res) => {
       .delete()
       .eq('id', req.params.id);
 
-    if (error) throw error;
+    if (error) throw mapSupabaseError(error);
     res.json({ ok: true });
-  } catch (e) {
-    console.error('Delete user error:', e);
-    res.status(500).json({ error: 'שגיאה במחיקת משתמש' });
-  }
-});
+  })
+);
 
 export default router;
