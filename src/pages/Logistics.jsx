@@ -144,29 +144,40 @@ export default function Logistics() {
   return (
     <div className="space-y-5 animate-fade-in">
       {/* Header */}
-      <div className="flex items-center justify-between gap-4">
+      <div className="flex items-center justify-between gap-4 flex-wrap">
         <div>
           <h1 className="text-2xl font-bold text-slate-900">לוגיסטיקה</h1>
           <p className="text-slate-500 text-sm">{gaps.length > 0 ? `${gaps.length} פערים פעילים` : 'כל הציוד תקין'}</p>
         </div>
-        <div className="flex gap-2">
-          {canWrite && tab === 'inventory' && (
+        {/* Action buttons — always visible (when user has logistics permission)
+            so they don't disappear when switching tabs. Both quick actions are
+            always available regardless of which tab is selected. */}
+        {canWrite ? (
+          <div className="flex gap-2 flex-wrap">
             <button
+              type="button"
               onClick={() => {
                 setForm({ name: '', category: 'ציוד מגן', total_quantity: 0, available_quantity: 0, min_required: 0, unit_of_measure: 'יחידה' });
                 setError('');
                 setModal('addItem');
               }}
-              className="btn-primary text-sm flex items-center gap-1">
+              className="btn-secondary text-sm flex items-center gap-1.5">
               <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 4v16m8-8H4" /></svg>
               פריט חדש
             </button>
-          )}
-          {canWrite && tab === 'assignments' && (
-            <button onClick={() => { setIssueForm({ soldier_id: '', item_id: '', quantity: 1 }); setError(''); setModal('issue'); }}
-              className="btn-primary text-sm">הנפקת ציוד</button>
-          )}
-        </div>
+            <button
+              type="button"
+              onClick={() => { setIssueForm({ soldier_id: '', item_id: '', quantity: 1 }); setError(''); setModal('issue'); }}
+              className="btn-primary text-sm flex items-center gap-1.5">
+              <svg className="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4M7.835 4.697a3.42 3.42 0 001.946-.806 3.42 3.42 0 014.438 0 3.42 3.42 0 001.946.806 3.42 3.42 0 013.138 3.138 3.42 3.42 0 00.806 1.946 3.42 3.42 0 010 4.438 3.42 3.42 0 00-.806 1.946 3.42 3.42 0 01-3.138 3.138 3.42 3.42 0 00-1.946.806 3.42 3.42 0 01-4.438 0 3.42 3.42 0 00-1.946-.806 3.42 3.42 0 01-3.138-3.138 3.42 3.42 0 00-.806-1.946 3.42 3.42 0 010-4.438 3.42 3.42 0 00.806-1.946 3.42 3.42 0 013.138-3.138z" /></svg>
+              הנפקת ציוד
+            </button>
+          </div>
+        ) : (
+          <div className="text-xs text-slate-400 bg-slate-50 border border-slate-200 rounded-xl px-3 py-2">
+            לעריכת לוגיסטיקה נדרשת הרשאת רס&quot;פ ומעלה
+          </div>
+        )}
       </div>
 
       {/* Tabs */}

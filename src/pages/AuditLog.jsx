@@ -2,15 +2,27 @@ import { useState, useEffect } from 'react';
 import axios from 'axios';
 import { formatDateTime } from '../utils/dateUtils';
 
+// Action colors — covers both old app-level action names AND the
+// DB-trigger-generated action names (CREATE_SOLDIERS / UPDATE_MISSIONS / …)
+// produced by fn_audit_log_trigger() in supabase/03_audit_triggers.sql.
 const ACTION_COLORS = {
-  LOGIN: 'badge-blue', LOGIN_2FA: 'badge-blue',
+  // Auth (app-level)
+  LOGIN: 'badge-blue', LOGIN_2FA: 'badge-blue', LOGOUT: 'badge-gray',
+  // DB trigger names (always uppercase table name)
+  CREATE_SOLDIERS: 'badge-green', UPDATE_SOLDIERS: 'badge-yellow', DELETE_SOLDIERS: 'badge-red',
+  CREATE_MISSIONS: 'badge-green', UPDATE_MISSIONS: 'badge-yellow', DELETE_MISSIONS: 'badge-red',
+  CREATE_ASSIGNMENTS: 'badge-blue', DELETE_ASSIGNMENTS: 'badge-yellow',
+  CREATE_USERS: 'badge-green', UPDATE_USERS: 'badge-yellow', DELETE_USERS: 'badge-red',
+  CREATE_EQUIPMENT_ITEMS: 'badge-green', UPDATE_EQUIPMENT_ITEMS: 'badge-yellow', DELETE_EQUIPMENT_ITEMS: 'badge-red',
+  UPDATE_SOLDIER_EQUIPMENT: 'badge-blue',
+  CREATE_RATIONS_REQUESTS: 'badge-green',
+  // Legacy / app-level action names
   CREATE_SOLDIER: 'badge-green', CREATE_MISSION: 'badge-green', CREATE_USER: 'badge-green',
   UPDATE_SOLDIER: 'badge-yellow', UPDATE_MISSION: 'badge-yellow',
   DELETE_SOLDIER: 'badge-red', DELETE_MISSION: 'badge-red',
   ASSIGN_SOLDIER: 'badge-blue', UNASSIGN_SOLDIER: 'badge-yellow',
   ISSUE_EQUIPMENT: 'badge-yellow', RETURN_EQUIPMENT: 'badge-green',
   BULK_STATUS_UPDATE: 'badge-orange', BULK_DELETE_SOLDIERS: 'badge-red',
-  UPDATE_SOLDIER_EQUIPMENT: 'badge-blue',
 };
 
 export default function AuditLog() {

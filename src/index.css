@@ -1,20 +1,61 @@
-@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700&display=swap');
+/* ─── Hebrew typography stack ────────────────────────────────────────────────
+ * Rubik = primary Hebrew sans (clean, modern, designed for IL apps).
+ * Heebo  = fallback Hebrew sans (Google's open-source Hebrew family).
+ * System fallbacks ensure rendering even when Google Fonts are blocked.
+ * ──────────────────────────────────────────────────────────────────────────── */
+@import url('https://fonts.googleapis.com/css2?family=Rubik:wght@300;400;500;600;700;800&family=Heebo:wght@300;400;500;600;700&display=swap');
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
 
 @layer base {
-  * { direction: rtl; }
+  html { direction: rtl; lang: he; }
   body {
-    font-family: 'Rubik', sans-serif;
+    /* Hebrew-first font stack: Rubik → Heebo → system Hebrew → system sans */
+    font-family: 'Rubik', 'Heebo', 'Segoe UI', 'Arial Hebrew', -apple-system, BlinkMacSystemFont, sans-serif;
     background: #f0f4f8;
     color: #1e293b;
+    /* Enable Hebrew kerning + diacritics + ligatures */
+    font-feature-settings: 'kern' 1, 'liga' 1, 'calt' 1;
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    text-rendering: optimizeLegibility;
   }
+
+  /* Numbers, dates, times, phone numbers, file paths — always LTR for legibility.
+     Pages that have an isolated number/date should wrap it with dir="ltr". */
+  .ltr, time, code, kbd, samp, .font-mono { direction: ltr; unicode-bidi: isolate; }
+
+  /* Hebrew-aware headings: tighter line-height, slight letter spacing for crispness. */
+  h1, h2, h3, h4 { letter-spacing: -0.01em; line-height: 1.25; }
+
+  /* Accessible focus ring for keyboard users — IL accessibility standard IS 5568 */
+  :focus-visible {
+    outline: 2px solid #2563eb;
+    outline-offset: 2px;
+    border-radius: 6px;
+  }
+  /* Don't show outline for mouse interactions */
+  :focus:not(:focus-visible) { outline: none; }
+
   ::-webkit-scrollbar { width: 6px; height: 6px; }
   ::-webkit-scrollbar-track { background: #e2e8f0; }
   ::-webkit-scrollbar-thumb { background: #94a3b8; border-radius: 3px; }
   ::-webkit-scrollbar-thumb:hover { background: #64748b; }
+
+  /* Form controls inherit RTL but keep numeric inputs LTR for clarity */
+  input[type="tel"], input[type="number"], input[type="email"],
+  input[type="url"], input[type="datetime-local"], input[type="date"], input[type="time"] {
+    direction: ltr; text-align: right;
+  }
+  /* Reduced motion = respect user pref (a11y) */
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 }
 
 @layer components {
@@ -85,26 +126,59 @@
     @apply hover:bg-slate-100 text-slate-600 hover:text-slate-900 font-medium px-4 py-2 rounded-xl transition-all duration-150;
   }
 
-  .input {
-    @apply bg-white border border-slate-300 text-slate-900 placeholder-slate-400 rounded-xl px-3 py-2 w-full transition-all duration-150;
-    box-shadow: 0 1px 2px rgba(0,0,0,0.05) inset;
+  /* Screen-reader-only label — for a11y on icon-only buttons */
+  .sr-only {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0,0,0,0);
+    white-space: nowrap;
+    border: 0;
   }
+
+  /* Force LTR rendering for an inline span — useful for numbers in Hebrew text */
+  .num { direction: ltr; unicode-bidi: isolate; font-variant-numeric: tabular-nums; }
+
+  .input {
+    @apply bg-white border border-slate-300 text-slate-900 placeholder-slate-400 rounded-xl px-3 py-2.5 w-full transition-all duration-150;
+    box-shadow: 0 1px 2px rgba(0,0,0,0.05) inset;
+    min-height: 42px; /* WCAG 2.5.5 — comfortable touch target */
+  }
+  .input:hover:not(:disabled) { @apply border-slate-400; }
   .input:focus {
     @apply outline-none border-blue-500;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.15), 0 1px 2px rgba(0,0,0,0.05) inset;
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.18), 0 1px 2px rgba(0,0,0,0.05) inset;
+  }
+  .input:disabled, .input[readonly] {
+    @apply bg-slate-50 text-slate-500 cursor-not-allowed;
+  }
+  .input.input-error, .input[aria-invalid="true"] {
+    @apply border-red-400;
+    box-shadow: 0 0 0 3px rgba(220,38,38,0.12), 0 1px 2px rgba(0,0,0,0.05) inset;
   }
 
   .select {
-    @apply bg-white border border-slate-300 text-slate-900 rounded-xl px-3 py-2 w-full transition-all duration-150;
+    @apply bg-white border border-slate-300 text-slate-900 rounded-xl px-3 py-2.5 w-full transition-all duration-150;
     box-shadow: 0 1px 2px rgba(0,0,0,0.05) inset;
+    min-height: 42px;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' fill='none' viewBox='0 0 24 24' stroke='%2364748b' stroke-width='2'%3E%3Cpath stroke-linecap='round' stroke-linejoin='round' d='M19 9l-7 7-7-7'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: left 0.75rem center;
+    background-size: 1rem;
+    padding-left: 2.25rem;
+    appearance: none;
   }
+  .select:hover:not(:disabled) { @apply border-slate-400; }
   .select:focus {
     @apply outline-none border-blue-500;
-    box-shadow: 0 0 0 3px rgba(59,130,246,0.15);
+    box-shadow: 0 0 0 3px rgba(59,130,246,0.18);
   }
 
   .label {
-    @apply block text-sm font-medium text-slate-600 mb-1;
+    @apply block text-sm font-medium text-slate-700 mb-1.5;
   }
 
   .badge-green {

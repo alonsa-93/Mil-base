@@ -60,10 +60,12 @@ async function exportToPdf(title, columns, data, filename) {
 }
 
 const REPORT_TYPES = [
-  { key: 'soldiers', label: 'סד"כ' },
-  { key: 'missions', label: 'משימות' },
-  { key: 'equipment', label: 'ציוד' },
-  { key: 'rations', label: 'הזנה' },
+  { key: 'soldiers',    label: 'סד"כ',            endpoint: '/api/soldiers' },
+  { key: 'missions',    label: 'משימות',          endpoint: '/api/missions' },
+  { key: 'equipment',   label: 'ציוד',            endpoint: '/api/equipment/items' },
+  { key: 'assignments', label: 'הנפקות ציוד',     endpoint: '/api/equipment/assignments' },
+  { key: 'rations',     label: 'הזנה',            endpoint: '/api/rations' },
+  { key: 'audit',       label: 'לוג פעולות',      endpoint: '/api/audit?limit=500' },
 ];
 
 const COLUMNS = {
@@ -76,9 +78,11 @@ const COLUMNS = {
     { key: 'role', header: 'תפקיד', transform: v => ROLE_LABELS[v] || v || '—' },
     { key: 'phone', header: 'טלפון' },
     { key: 'status', header: 'סטטוס' },
-    { key: 'mil_shirt', header: 'חולצה' },
-    { key: 'mil_pants', header: 'מכנס' },
+    { key: 'mil_shirt', header: 'חולצה צבאית' },
+    { key: 'mil_pants', header: 'מכנס צבאי' },
     { key: 'mil_boots', header: 'נעליים' },
+    { key: 'civil_shirt', header: 'חולצה אזרחית' },
+    { key: 'civil_pants', header: 'מכנס אזרחי' },
   ],
   missions: [
     { key: 'title', header: 'משימה' },
@@ -97,6 +101,16 @@ const COLUMNS = {
     { key: 'available_quantity', header: 'זמין' },
     { key: 'min_required', header: 'מינימום' },
   ],
+  assignments: [
+    { key: 'full_name', header: 'חייל' },
+    { key: 'personal_id', header: 'מס׳ אישי' },
+    { key: 'item_name', header: 'פריט' },
+    { key: 'category', header: 'קטגוריה' },
+    { key: 'quantity', header: 'כמות' },
+    { key: 'status', header: 'סטטוס' },
+    { key: 'issued_at', header: 'הונפק', transform: v => v ? new Date(v).toLocaleString('he-IL') : '—' },
+    { key: 'returned_at', header: 'הוחזר', transform: v => v ? new Date(v).toLocaleString('he-IL') : '—' },
+  ],
   rations: [
     { key: 'date', header: 'תאריך' },
     { key: 'meal_type', header: 'ארוחה' },
@@ -106,6 +120,13 @@ const COLUMNS = {
     { key: 'lactose_free_count', header: 'ללא לקטוז' },
     { key: 'gluten_free_count', header: 'ללא גלוטן' },
   ],
+  audit: [
+    { key: 'created_at', header: 'זמן', transform: v => v ? new Date(v).toLocaleString('he-IL') : '—' },
+    { key: 'username', header: 'משתמש' },
+    { key: 'action', header: 'פעולה' },
+    { key: 'entity_type', header: 'ישות' },
+    { key: 'entity_id', header: 'מזהה' },
+  ],
 };
 
 export default function Reports() {
@@ -113,15 +134,30 @@ export default function Reports() {
   const [data, setData] = useState([]);
   const [loading, setLoading] = useState(false);
   const [filterStatus, setFilterStatus] = useState('');
+  const [lastFetched, setLastFetched] = useState(null);
 
-  useEffect(() => { fetchData(); }, [type]);
+  useEffect(() => { fetchData(); /* eslint-disable-next-line */ }, [type]);
+
+  // Auto-refresh when the tab regains focus — so reports always reflect
+  // additions made elsewhere in the app without manual reload.
+  useEffect(() => {
+    function onFocus() { fetchData(); }
+    window.addEventListener('focus', onFocus);
+    return () => window.removeEventListener('focus', onFocus);
+    // eslint-disable-next-line
+  }, [type]);
 
   async function fetchData() {
     setLoading(true);
     try {
-      const endpoints = { soldiers: '/api/soldiers', missions: '/api/missions', equipment: '/api/equipment/items', rations: '/api/rations' };
-      const res = await axios.get(endpoints[type]);
-      setData(res.data);
+      const endpoint = REPORT_TYPES.find(r => r.key === type)?.endpoint;
+      if (!endpoint) return;
+      const res = await axios.get(endpoint);
+      setData(Array.isArray(res.data) ? res.data : []);
+      setLastFetched(new Date());
+    } catch (e) {
+      console.error('Reports fetch failed:', e);
+      setData([]);
     } finally { setLoading(false); }
   }
 
@@ -132,9 +168,29 @@ export default function Reports() {
 
   return (
     <div className="space-y-5 animate-fade-in">
-      <div>
-        <h1 className="text-2xl font-bold text-slate-900">דוחות</h1>
-        <p className="text-slate-500 text-sm">ייצוא נתונים ל-Excel ו-PDF</p>
+      <div className="flex items-end justify-between flex-wrap gap-3">
+        <div>
+          <h1 className="text-2xl font-bold text-slate-900">דוחות</h1>
+          <p className="text-slate-500 text-sm">
+            ייצוא נתונים ל-Excel ו-PDF
+            {lastFetched && (
+              <span className="text-slate-400 text-xs mr-2" dir="ltr">
+                · עודכן {lastFetched.toLocaleTimeString('he-IL', { hour: '2-digit', minute: '2-digit' })}
+              </span>
+            )}
+          </p>
+        </div>
+        <button
+          type="button"
+          onClick={fetchData}
+          disabled={loading}
+          className="btn-secondary text-sm flex items-center gap-2"
+          aria-label="רענון">
+          <svg className={`w-4 h-4 ${loading ? 'animate-spin' : ''}`} fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+          </svg>
+          רענון
+        </button>
       </div>
 
       {/* Type selector */}

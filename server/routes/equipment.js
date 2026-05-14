@@ -194,4 +194,143 @@ router.get('/gaps',
   })
 );
 
+// ── GET /api/equipment/assignments ────────────────────────────────────────────
+// Returns active equipment issuances with joined soldier + item names so
+// the frontend can render a single table without N+1 lookups.
+router.get('/assignments',
+  requireAuth,
+  asyncHandler(async (_req, res) => {
+    const { data, error } = await supabase
+      .from('equipment_assignments')
+      .select(`
+        id, quantity, status, issued_at, returned_at,
+        soldier:soldiers(id, full_name, personal_id),
+        item:equipment_items(id, name, category)
+      `)
+      .order('issued_at', { ascending: false });
+
+    if (error) throw mapSupabaseError(error);
+
+    const flat = (data ?? []).map(a => ({
+      id:          a.id,
+      quantity:    a.quantity,
+      status:      a.status,
+      issued_at:   a.issued_at,
+      returned_at: a.returned_at,
+      soldier_id:  a.soldier?.id,
+      full_name:   a.soldier?.full_name,
+      personal_id: a.soldier?.personal_id,
+      item_id:     a.item?.id,
+      item_name:   a.item?.name,
+      category:    a.item?.category,
+    }));
+
+    res.json(flat);
+  })
+);
+
+// ── POST /api/equipment/issue ─────────────────────────────────────────────────
+// Issues N units of an item to a soldier. Decrements available_quantity
+// and creates an `equipment_assignments` row with status='הונפק'.
+//
+// Note: we attempt the atomic RPC `fn_issue_equipment` first (defined in
+// supabase/02_rpc_functions.sql) — if it's missing in this environment we
+// fall back to a 2-step write. Either path returns the new assignment.
+router.post('/issue',
+  requireAuth, requireRole('rasap'),
+  validate({
+    body: z.object({
+      soldier_id: z.union([z.number().int().positive(), z.string().regex(/^\d+$/).transform(Number)]),
+      item_id:    z.union([z.number().int().positive(), z.string().regex(/^\d+$/).transform(Number)]),
+      quantity:   z.number().int().min(1).default(1),
+    }),
+  }),
+  asyncHandler(async (req, res) => {
+    const { soldier_id, item_id, quantity } = req.body;
+
+    // Try atomic RPC first
+    const rpcAttempt = await supabase.rpc('fn_issue_equipment', {
+      p_soldier_id: soldier_id, p_item_id: item_id, p_quantity: quantity, p_issued_by: req.user.id,
+    });
+    if (!rpcAttempt.error && rpcAttempt.data) {
+      return res.status(201).json(rpcAttempt.data);
+    }
+
+    // ── Fallback: 2-step write ────────────────────────────────────────────────
+    const { data: item, error: itemErr } = await supabase
+      .from('equipment_items')
+      .select('id, available_quantity')
+      .eq('id', item_id)
+      .maybeSingle();
+
+    if (itemErr) throw mapSupabaseError(itemErr);
+    if (!item) throw Errors.notFound('פריט ציוד');
+    if (item.available_quantity < quantity) throw Errors.badRequest('אין מספיק במלאי');
+
+    const { error: decErr } = await supabase
+      .from('equipment_items')
+      .update({ available_quantity: item.available_quantity - quantity })
+      .eq('id', item_id);
+    if (decErr) throw mapSupabaseError(decErr);
+
+    const { data: assignment, error: insErr } = await supabase
+      .from('equipment_assignments')
+      .insert({
+        soldier_id, item_id, quantity,
+        status: 'הונפק',
+        issued_by: req.user.id,
+      })
+      .select()
+      .single();
+
+    if (insErr) throw mapSupabaseError(insErr);
+    res.status(201).json(assignment);
+  })
+);
+
+// ── POST /api/equipment/return/:id ────────────────────────────────────────────
+// Returns issued equipment to inventory. Marks the assignment as 'הוחזר'
+// and increments equipment_items.available_quantity by the assignment's quantity.
+router.post('/return/:id',
+  requireAuth, requireRole('rasap'),
+  validate({ params: Schemas.idParam }),
+  asyncHandler(async (req, res) => {
+    const { data: assignment, error: aErr } = await supabase
+      .from('equipment_assignments')
+      .select('id, item_id, quantity, status')
+      .eq('id', req.params.id)
+      .maybeSingle();
+
+    if (aErr) throw mapSupabaseError(aErr);
+    if (!assignment) throw Errors.notFound('הנפקה');
+    if (assignment.status === 'הוחזר') throw Errors.badRequest('הציוד כבר הוחזר');
+
+    // Increment inventory
+    const { data: item, error: itemErr } = await supabase
+      .from('equipment_items')
+      .select('available_quantity')
+      .eq('id', assignment.item_id)
+      .maybeSingle();
+
+    if (itemErr) throw mapSupabaseError(itemErr);
+
+    const { error: incErr } = await supabase
+      .from('equipment_items')
+      .update({ available_quantity: (item?.available_quantity ?? 0) + assignment.quantity })
+      .eq('id', assignment.item_id);
+    if (incErr) throw mapSupabaseError(incErr);
+
+    // Mark returned
+    const { data: updated, error: upErr } = await supabase
+      .from('equipment_assignments')
+      .update({ status: 'הוחזר', returned_at: new Date().toISOString() })
+      .eq('id', req.params.id)
+      .select()
+      .single();
+    if (upErr) throw mapSupabaseError(upErr);
+
+    res.json(updated);
+  })
+);
+
 export default router;

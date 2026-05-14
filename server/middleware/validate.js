@@ -77,6 +77,8 @@ export const Schemas = {
     mil_shirt:          z.string().optional(),
     mil_pants:          z.string().optional(),
     mil_boots:          z.string().optional(),
+    civil_shirt:        z.enum(['', 'XS', 'S', 'M', 'L', 'XL', 'XXL']).optional().nullable(),
+    civil_pants:        z.enum(['', 'XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL']).optional().nullable(),
     is_vegan:           z.number().int().min(0).max(1).default(0),
     is_vegetarian:      z.number().int().min(0).max(1).default(0),
     lactose_intolerant: z.number().int().min(0).max(1).default(0),

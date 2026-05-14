@@ -4,6 +4,8 @@ import { useAuth } from '../context/AuthContext';
 import { canEdit } from '../utils/rbac';
 
 const MIL_SIZES = ['ק', 'ב', 'ג', 'מ', 'ממ'];
+const CIVIL_SHIRT_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL'];
+const CIVIL_PANTS_SIZES = ['XS', 'S', 'M', 'L', 'XL', 'XXL', 'XXXL'];
 const BOOT_SIZES = Array.from({ length: 16 }, (_, i) => String(35 + i));
 const STATUSES = ['זמין', 'במשימה', 'מנוחה', 'חופשה', 'אחר'];
 const ROLES = ['lohem', 'samal', 'rasap', 'mefaked', 'magad'];
@@ -22,16 +24,23 @@ const defaultForm = {
   personal_id: '', full_name: '', role: 'lohem', status: 'זמין', phone: '',
   company: 'א', team: '', gender: 'זכר',
   mil_shirt: 'מ', mil_pants: 'מ', mil_boots: '42',
+  civil_shirt: 'M', civil_pants: 'M',
   is_vegan: 0, is_vegetarian: 0, lactose_intolerant: 0, gluten_free: 0, nutrition_notes: '',
 };
 
+// Required label marker (must be defined at module scope, NOT inside the component,
+// otherwise React creates a new component instance every render and remounts inputs,
+// which causes the input to lose focus after every keystroke).
+const Req = () => <span className="text-red-500 mr-0.5">*</span>;
+
 function exportToExcel(soldiers) {
   import('xlsx').then(XLSX => {
-    const headers = ['מס"ד', 'שם מלא', 'מספר אישי', 'פלוגה', 'צוות', 'תפקיד', 'טלפון', 'סטטוס', 'מין', 'חולצה', 'מכנס', 'נעליים', 'טבעוני', 'צמחוני', 'ללא לקטוז', 'ללא גלוטן'];
+    const headers = ['מס"ד', 'שם מלא', 'מספר אישי', 'פלוגה', 'צוות', 'תפקיד', 'טלפון', 'סטטוס', 'מין', 'חולצה צבאית', 'מכנס צבאי', 'נעליים', 'חולצה אזרחית', 'מכנס אזרחי', 'טבעוני', 'צמחוני', 'ללא לקטוז', 'ללא גלוטן'];
     const rows = soldiers.map(s => [
       s.serial_num, s.full_name, s.personal_id, s.company, s.team,
       ROLE_LABELS[s.role] || s.role, s.phone, s.status, s.gender || 'זכר',
       s.mil_shirt, s.mil_pants, s.mil_boots,
+      s.civil_shirt || '', s.civil_pants || '',
       s.is_vegan ? 'כן' : 'לא', s.is_vegetarian ? 'כן' : 'לא',
       s.lactose_intolerant ? 'כן' : 'לא', s.gluten_free ? 'כן' : 'לא',
     ]);
@@ -90,18 +99,18 @@ function importFromExcel(file, onSuccess) {
         mil_shirt: r[9] || 'מ',
         mil_pants: r[10] || 'מ',
         mil_boots: String(r[11] || '42'),
-        is_vegan: r[12] === 'כן' ? 1 : 0,
-        is_vegetarian: r[13] === 'כן' ? 1 : 0,
-        lactose_intolerant: r[14] === 'כן' ? 1 : 0,
-        gluten_free: r[15] === 'כן' ? 1 : 0,
+        civil_shirt: r[12] || '',
+        civil_pants: r[13] || '',
+        is_vegan: r[14] === 'כן' ? 1 : 0,
+        is_vegetarian: r[15] === 'כן' ? 1 : 0,
+        lactose_intolerant: r[16] === 'כן' ? 1 : 0,
+        gluten_free: r[17] === 'כן' ? 1 : 0,
       }));
       onSuccess(soldiers);
     };
     reader.readAsBinaryString(file);
   });
 }
-
-const Req = () => <span className="text-red-500 mr-0.5">*</span>;
 
 export default function Soldiers() {
   const { user } = useAuth();
@@ -253,18 +262,16 @@ export default function Soldiers() {
     return matchSearch && matchStatus && matchCompany && matchTeam && matchRole;
   });
 
-  const F = ({ label, name, required, children }) => (
-    <div>
-      <label className="label">{required && <Req />}{label}</label>
-      {children || (
-        <input
-          className="input"
-          value={form[name] || ''}
-          onChange={e => setForm(p => ({ ...p, [name]: e.target.value }))}
-          onKeyDown={e => e.stopPropagation()}
-        />
-      )}
-    </div>
+  // Inline text input renderer — uses the parent's `form` and `setForm` closures
+  // directly, so the underlying <input> element keeps its identity across
+  // re-renders (no focus loss while typing).
+  const renderInput = (name, placeholder = '') => (
+    <input
+      className="input"
+      placeholder={placeholder}
+      value={form[name] ?? ''}
+      onChange={e => setForm(p => ({ ...p, [name]: e.target.value }))}
+    />
   );
 
   return (
@@ -455,9 +462,18 @@ export default function Soldiers() {
               <section>
                 <h3 className="text-sm font-bold text-slate-700 mb-3 pb-2 border-b border-slate-100">פרטים אישיים</h3>
                 <div className="grid grid-cols-2 gap-4">
-                  <F label="שם מלא" name="full_name" required />
-                  <F label="מספר אישי" name="personal_id" required />
-                  <F label="טלפון" name="phone" required />
+                  <div>
+                    <label className="label"><Req />שם מלא</label>
+                    {renderInput('full_name', 'שם פרטי ושם משפחה')}
+                  </div>
+                  <div>
+                    <label className="label"><Req />מספר אישי</label>
+                    {renderInput('personal_id', '1234567')}
+                  </div>
+                  <div>
+                    <label className="label"><Req />טלפון</label>
+                    {renderInput('phone', '050-0000000')}
+                  </div>
                   <div>
                     <label className="label"><Req />מין</label>
                     <select className="select" value={form.gender} onChange={e => setForm(p => ({ ...p, gender: e.target.value }))}>
@@ -477,7 +493,10 @@ export default function Soldiers() {
                       {COMPANIES.map(c => <option key={c} value={c}>פלוגה {c}</option>)}
                     </select>
                   </div>
-                  <F label="צוות" name="team" required />
+                  <div>
+                    <label className="label"><Req />צוות</label>
+                    {renderInput('team', 'מס׳ צוות')}
+                  </div>
                   <div>
                     <label className="label"><Req />תפקיד</label>
                     <select className="select" value={form.role} onChange={e => setForm(p => ({ ...p, role: e.target.value }))}>
@@ -518,6 +537,27 @@ export default function Soldiers() {
                 </div>
               </section>
 
+              {/* Civilian sizes */}
+              <section>
+                <h3 className="text-sm font-bold text-slate-700 mb-3 pb-2 border-b border-slate-100">מידות אזרחיות</h3>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <label className="label">חולצה</label>
+                    <select className="select" value={form.civil_shirt || ''} onChange={e => setForm(p => ({ ...p, civil_shirt: e.target.value }))}>
+                      <option value="">—</option>
+                      {CIVIL_SHIRT_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                  <div>
+                    <label className="label">מכנס</label>
+                    <select className="select" value={form.civil_pants || ''} onChange={e => setForm(p => ({ ...p, civil_pants: e.target.value }))}>
+                      <option value="">—</option>
+                      {CIVIL_PANTS_SIZES.map(s => <option key={s} value={s}>{s}</option>)}
+                    </select>
+                  </div>
+                </div>
+              </section>
+
               {/* Nutrition */}
               <section>
                 <h3 className="text-sm font-bold text-slate-700 mb-3 pb-2 border-b border-slate-100">העדפות תזונה</h3>
@@ -530,7 +570,10 @@ export default function Soldiers() {
                     </label>
                   ))}
                 </div>
-                <F label="הערות תזונה" name="nutrition_notes" />
+                <div>
+                  <label className="label">הערות תזונה</label>
+                  {renderInput('nutrition_notes', 'הערות נוספות')}
+                </div>
               </section>
 
               {error && (
@@ -594,6 +637,13 @@ export default function Soldiers() {
                   <span>חולצה: <strong>{selected.mil_shirt || '—'}</strong></span>
                   <span>מכנס: <strong>{selected.mil_pants || '—'}</strong></span>
                   <span>נעליים: <strong>{selected.mil_boots || '—'}</strong></span>
+                </div>
+              </div>
+              <div className="bg-slate-50 rounded-xl p-3">
+                <div className="text-xs font-semibold text-slate-500 mb-2">מידות אזרחיות</div>
+                <div className="flex gap-4 text-sm text-slate-700">
+                  <span>חולצה: <strong>{selected.civil_shirt || '—'}</strong></span>
+                  <span>מכנס: <strong>{selected.civil_pants || '—'}</strong></span>
                 </div>
               </div>
               <div className="flex flex-wrap gap-1.5">

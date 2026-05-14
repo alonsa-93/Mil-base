@@ -75,6 +75,7 @@ export const soldierService = {
       personal_id, full_name, role = 'lohem', status = 'זמין', phone,
       company, team, gender = 'זכר',
       mil_shirt, mil_pants, mil_boots,
+      civil_shirt, civil_pants,
       is_vegan = 0, is_vegetarian = 0,
       lactose_intolerant = 0, gluten_free = 0,
       nutrition_notes,
@@ -93,6 +94,8 @@ export const soldierService = {
       .insert({
         serial_num, personal_id, full_name, role, status, phone,
         company, team, gender, mil_shirt, mil_pants, mil_boots,
+        civil_shirt: civil_shirt || null,
+        civil_pants: civil_pants || null,
         is_vegan, is_vegetarian, lactose_intolerant, gluten_free,
         nutrition_notes,
       })
@@ -112,6 +115,7 @@ export const soldierService = {
       'personal_id', 'full_name', 'role', 'status', 'phone',
       'company', 'team', 'gender',
       'mil_shirt', 'mil_pants', 'mil_boots',
+      'civil_shirt', 'civil_pants',
       'is_vegan', 'is_vegetarian', 'lactose_intolerant', 'gluten_free',
       'nutrition_notes', 'last_mission_end',
       'total_guard_hours', 'total_mission_hours',

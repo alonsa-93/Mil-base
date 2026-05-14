@@ -17,7 +17,8 @@ const defaultMission = {
 
 export default function Calendar() {
   const { user } = useAuth();
-  const [view, setView] = useState('week'); // week | month
+  // Default to month view so the user sees the full current month at once.
+  const [view, setView] = useState('month'); // week | month
   const [baseDate, setBaseDate] = useState(new Date());
   const [missions, setMissions] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -194,31 +195,53 @@ export default function Calendar() {
         </div>
       )}
 
-      {/* Month View */}
+      {/* Month View — full current month, large cells, scrollable per-day */}
       {view === 'month' && (
         <div className="card overflow-hidden">
-          <div className="px-4 py-3 border-b border-slate-100 text-sm font-semibold text-slate-600">{monthLabel}</div>
+          <div className="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+            <div className="text-sm font-semibold text-slate-700">{monthLabel}</div>
+            <div className="text-xs text-slate-400">{monthDays.filter(Boolean).reduce((a, d) => a + getMissionsForDay(d).length, 0)} משימות החודש</div>
+          </div>
           <div className="grid grid-cols-7 border-b border-slate-100 bg-slate-50">
-            {DAY_NAMES.map(d => <div key={d} className="text-center py-2 text-xs font-semibold text-slate-400">{d}</div>)}
+            {DAY_NAMES.map(d => <div key={d} className="text-center py-2 text-xs font-semibold text-slate-500">{d}</div>)}
           </div>
           <div className="grid grid-cols-7">
             {monthDays.map((day, i) => {
-              if (!day) return <div key={i} className="h-24 border-b border-r border-slate-100" />;
+              if (!day) return <div key={i} className="min-h-[120px] sm:min-h-[140px] border-b border-r border-slate-100 bg-slate-50/50" />;
               const isToday = isSameDay(day, new Date());
+              const isWeekend = day.getDay() === 6; // Saturday
               const dayMissions = getMissionsForDay(day);
               return (
-                <div key={i} className={`min-h-[80px] border-b border-r border-slate-100 p-1 ${isToday ? 'bg-blue-50' : 'hover:bg-slate-50'}`}>
-                  <div className={`text-xs font-bold mb-1 w-6 h-6 rounded-full flex items-center justify-center ${isToday ? 'bg-blue-600 text-white' : 'text-slate-500'}`}>{day.getDate()}</div>
-                  {dayMissions.slice(0, 2).map(m => (
-                    <button key={m.id} onClick={() => openDetail2(m)}
-                      className={`w-full text-right px-1.5 py-0.5 rounded-md text-xs border-r-2 ${urgencyColor[m.urgency]} ${statusBg[m.status]} mb-0.5 hover:opacity-80 truncate font-medium text-slate-700`}>
-                      {m.title}
-                    </button>
-                  ))}
-                  {dayMissions.length > 2 && <div className="text-xs text-slate-400 pr-1">+{dayMissions.length - 2} נוספות</div>}
-                  {canWrite && dayMissions.length === 0 && (
-                    <button onClick={() => openAdd(day)} className="w-full text-center text-slate-300 hover:text-blue-600 text-xs transition-colors">+</button>
-                  )}
+                <div
+                  key={i}
+                  className={`min-h-[120px] sm:min-h-[140px] border-b border-r border-slate-100 p-1.5 flex flex-col ${isToday ? 'bg-blue-50' : isWeekend ? 'bg-slate-50/40 hover:bg-slate-50' : 'hover:bg-slate-50'}`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <div className={`text-xs font-bold w-6 h-6 rounded-full flex items-center justify-center ${isToday ? 'bg-blue-600 text-white shadow-md shadow-blue-200' : 'text-slate-600'}`} dir="ltr">{day.getDate()}</div>
+                    {canWrite && (
+                      <button
+                        onClick={() => openAdd(day)}
+                        aria-label="הוסף משימה"
+                        className="w-5 h-5 rounded-md text-slate-300 hover:text-blue-600 hover:bg-blue-50 text-sm leading-none transition-colors"
+                      >+</button>
+                    )}
+                  </div>
+                  <div className="flex-1 space-y-0.5 overflow-y-auto max-h-[110px]">
+                    {dayMissions.slice(0, 4).map(m => (
+                      <button key={m.id} onClick={() => openDetail2(m)}
+                        title={`${m.title} (${formatTime(m.start_time)})`}
+                        className={`w-full text-right px-1.5 py-1 rounded-md text-[11px] leading-tight border-r-2 ${urgencyColor[m.urgency]} ${statusBg[m.status]} hover:opacity-80 truncate font-medium text-slate-800 transition-opacity`}>
+                        <span className="font-mono text-[10px] text-slate-500 ml-1" dir="ltr">{formatTime(m.start_time)}</span>
+                        {m.title}
+                      </button>
+                    ))}
+                    {dayMissions.length > 4 && (
+                      <button
+                        onClick={() => { setBaseDate(day); setView('week'); }}
+                        className="w-full text-right text-[10px] text-blue-600 hover:text-blue-800 pr-1.5 font-semibold transition-colors"
+                      >+{dayMissions.length - 4} נוספות</button>
+                    )}
+                  </div>
                 </div>
               );
             })}
