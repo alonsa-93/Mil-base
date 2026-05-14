@@ -34,13 +34,30 @@ app.use(helmet({
 }));
 
 // ─── CORS ─────────────────────────────────────────────────────────────────────
-const allowedOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',');
+// Allows:
+//   - Any origin listed explicitly in FRONTEND_URL (comma-separated)
+//   - When running on Vercel: any *.vercel.app subdomain (preview deployments
+//     get a unique URL per commit, so hard-coding them isn't practical)
+//   - Same-origin / server-to-server requests (no Origin header)
+const explicitOrigins = (process.env.FRONTEND_URL || 'http://localhost:5173').split(',').map(s => s.trim());
+const isVercel        = process.env.VERCEL === '1';
+
+function isOriginAllowed(origin) {
+  if (!origin) return true;                        // server-to-server / curl
+  if (explicitOrigins.includes(origin)) return true;
+  if (isVercel && /^https:\/\/[a-z0-9-]+\.vercel\.app$/i.test(origin)) return true;
+  return false;
+}
+
 app.use(cors({
   origin: (origin, callback) => {
-    if (!origin || allowedOrigins.includes(origin)) {
+    if (isOriginAllowed(origin)) {
       callback(null, true);
     } else {
-      callback(new Error(`CORS: origin ${origin} not allowed`));
+      // Reject as a structured 403 rather than throwing — otherwise the
+      // generic errorHandler reports "internal server error" which masks
+      // the real cause.
+      callback(null, false);
     }
   },
   credentials: true,
